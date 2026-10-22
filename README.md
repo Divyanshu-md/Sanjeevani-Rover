@@ -206,6 +206,162 @@ The rover's four geared motors are driven manually via a FlySky radio remote and
  FlySky Receiver (FS-iA10B) --> Motor Driver --> 4 Geared Motors
 ```
 
+## 3. How the AI Detection & Alert Protocol Work
+
+### Posture & Movement Rules
+1. **17-Keypoint Pose Estimation:** `rover_node.py` runs `yolov8n-pose.onnx` using 3 CPU threads (`ORT_THREADS = 3`)[cite: 2]. In camera-only mode (`THERMAL_MODE = "off"`), a full detection requires a confidence score of at least `0.50` (`CAMONLY_MIN_CONF`) and at least `5` visible keypoints (`CAMONLY_MIN_KEYPOINTS`) above `0.30` visibility (`KP_VIS_THRESH`)[cite: 2, 9]. If a body is partially cut off, a partial detection (`Person detected (partial view)`) is triggered at confidence `>= 0.40` with at least `2` visible keypoints[cite: 2, 8, 11].
+2. **3-Second Shape Voting:** Single-frame keypoint fits can jitter, so body geometry (`upright`, `lying`, or `slumped` based on a `60°` lying torso angle or `35°` slump angle) is decided by a majority vote over the last `3.0` seconds (`POSTURE_VOTE_S`)[cite: 2, 9].
+3. **5-Second Relative Motion Tracking:** `MotionTracker` normalizes keypoint positions relative to the bounding box center and size over a `5.0`-second window (`MOTION_WINDOW_S`)[cite: 2, 9]. If the average keypoint standard deviation is `>= 0.02` (`MOTION_THRESH`), the person is marked **Conscious**; if below `0.02`, **Unconscious**[cite: 2, 9, 11].
+4. **3-of-5 Temporal Fusion:** The main thread checks state snapshots every `0.1` seconds (`FUSION_PERIOD_S`) and only transmits an alert when the newest check is positive and at least **3 of the last 5** checks agree (`CONFIRM_MIN = 3`, `CONFIRM_WINDOW = 5`)[cite: 2, 9, 17].
+
+### Alert Packet Format
+Each alert is sent as a single UTF-8 UDP datagram protected by a 4-hex-digit `CRC-16/CCITT-FALSE` checksum after `*`[cite: 8, 9]:
+
+```text
+ALERT: Human found! Status: Conscious (Upright/Sitting) | Distance: 2.1 m | Lat: N/A | Lon: N/A | Temp: N/A | Fix: NONE | Seq: 1*587E
+```
+
+* **Status Values:** `Conscious (Upright/Sitting)`, `Unconscious (Collapsed/Slumped)`, `Conscious Lying Down`, `Unconscious Lying Down`, or `Person detected (partial view)`[cite: 8].
+* **GPS Fix Labels:** `LIVE` (fix age `<= 3.0 s`), `CACHED-<n>s` (older fix), or `NONE` (no fix/indoors; the rover never invents coordinates)[cite: 2, 9, 17].
+
+---
+
+## 4. Hardware Bill of Materials & Wiring
+
+* **Compute:** Raspberry Pi 4 Model B with passive heatsink (maintains 45–50°C under load, down from 62–70°C bare)[cite: 2, 16, 17, 20].
+* **Vision:** Raspberry Pi Camera Rev 1.3 (`ov5647` CSI ribbon camera, mounted inverted with `CAM_ROTATE_180 = True`) + Zebronics USB 2.0 Webcam (`/dev/v4l/by-id/*-video-index0`)[cite: 2, 4, 7, 9, 12, 13, 14].
+* **Navigation & Audio:** Neo-6M UART GPS module + amplified AUX speaker on the 3.5 mm jack[cite: 9, 11, 16].
+* **Drive & Power:** 4 geared motors, motor driver, FlySky transmitter & FS-iA10B receiver, 2x 2200mAh 80C LiPo packs (drive power), and an isolated 5V power bank for the Pi[cite: 9, 11, 15, 16].
+* **Chassis:** Rapid-prototyped cardboard enclosure (lightweight, zero-cost, quick modification)[cite: 12, 14, 16, 20].
+
+### GPS Module Wiring (UART `/dev/serial0` @ 9600 baud)[cite: 2, 9]
+
+| GPS Pin | Pi Physical Pin | Pi Signal |
+|---|---|---|
+| VCC | Pin 1 (3.3V) or Pin 2 (5V) | Power (check board regulator label)[cite: 4, 9] |
+| GND | Pin 6 | GND[cite: 4, 9] |
+| TX | **Pin 10** | GPIO15 (RXD)[cite: 4, 9] |
+| RX | **Pin 8** | GPIO14 (TXD)[cite: 4, 9] |
+
+### Optional AMG8833 Thermal Sensor Wiring (I2C1 @ `0x69` / `0x68`)[cite: 2, 9]
+
+| AMG8833 Pin | Pi Physical Pin | Pi Signal |
+|---|---|---|
+| VIN | Pin 1 | 3.3V[cite: 9] |
+| GND | Pin 9 | GND[cite: 9] |
+| SDA | Pin 3 | GPIO2 (SDA)[cite: 9] |
+| SCL | Pin 5 | GPIO3 (SCL)[cite: 9] |
+
+---
+
+## 5. Network Setup & Quick-Start Demo Commands
+
+### Static Ethernet Configuration
+* **Laptop Ground Station:** IP `192.168.50.1`, Subnet `255.255.255.0` (no default gateway), with UDP port `5005` allowed in Windows Defender Firewall[cite: 9, 11]:
+  ```powershell
+  netsh advfirewall firewall add rule name="Rescue UDP 5005" dir=in action=allow protocol=UDP localport=5005 profile=any
+  ```
+* **Raspberry Pi Rover:** IP `192.168.50.2/24` on `eth0` (`ipv4.never-default yes` so Wi-Fi retains internet access)[cite: 9, 11].
+
+### Live Demo Execution Sequence
+
+**Step 1 — Start the Laptop Ground Station (PowerShell Window B):**[cite: 5, 11]
+```powershell
+cd C:\Users\csc\OneDrive\Desktop\rescue
+python ground_station.py
+```
+
+**Step 2 — Connect to the Raspberry Pi & Run Health Check (PowerShell Window A):**[cite: 4, 9, 11]
+```bash
+ssh divyanshu@192.168.50.2
+cd ~/rescue && source venv/bin/activate
+python3 check_all.py
+```
+
+**Step 3 — Start AI Human Detection on the Rover (Pi Window A):**[cite: 2, 9, 11]
+```bash
+python3 rover_node.py -v
+```
+
+**Step 4 — Start Live Operator Driving View (Second Pi SSH Window):**[cite: 7, 9, 11]
+```bash
+cd ~/rescue && source venv/bin/activate
+python3 operator_view.py
+```
+Open **`[http://192.168.50.2:8080](http://192.168.50.2:8080)`** in Chrome on the laptop to view the live USB webcam stream[cite: 7, 9, 11].
+
+**Useful Diagnostic & Audio Commands on the Pi:**[cite: 3, 10, 11]
+```bash
+python3 see_detection.py          # Capture 1 frame with AI keypoints to ~/rescue/seen.jpg
+python3 calibrate_motion.py       # Calibrate MOTION_THRESH for still vs. moving posture
+python3 speaker_alert.py test     # Test English and Hindi voice alerts over the speaker
+touch ~/rescue/MUTE               # Mute speaker alerts (remove with: rm ~/rescue/MUTE)
+vcgencmd measure_temp             # Check Pi CPU temperature
+sudo shutdown now                 # Safely shut down the Pi before unplugging power
+```
+
+---
+
+## 6. Design Choices & Roadmap
+
+* **Why Camera-Only?** Keeping a thermal camera optional reduces cost and weight so schools and local rescue teams can build the rover with off-the-shelf parts, while the protocol already reserves the `Temp:` field for a drop-in AMG8833 sensor upgrade[cite: 2, 9, 16, 20].
+* **Why ~3 FPS on a CPU?** Running YOLOv8-pose on a Raspberry Pi 4 CPU at ~3 frames per second avoids expensive GPU hardware; combined with the 3-of-5 voting filter, it prioritizes steady, reliable alerts over raw frame rate[cite: 4, 11, 17, 20].
+* **Why a Cardboard Chassis?** It enabled rapid, zero-cost iteration of sensor placement and electronics testing while our 3D printer was unavailable[cite: 11, 16, 20].
+* **Next Upgrades:**
+  1. **3D-Printed Weather-Resistant Body:** Transitioning to our CAD-designed chassis and motor mounts (`motor_cradle.stl`, `motor_clamp.stl`)[cite: 11, 16, 18, 20].
+  2. **AMG8833 Thermal Sensor:** Enabling `THERMAL_MODE = "amg8833"` to cross-check body heat and eliminate visual false positives[cite: 2, 9, 18, 20].
+  3. **Fiber-Optic / Tethered Link:** Developing a thin physical tether (inspired by fiber-optic drones) to maintain high-bandwidth communication inside deep rubble where radio signals weaken[cite: 18, 20].
+
+  # Step 1: Go to your local project folder and create subfolders[cite: 11]
+cd C:\Users\csc\OneDrive\Desktop\rescue
+mkdir -Force images, hardware
+
+# Step 2: (Optional) Pull any remaining scripts from the Pi if it is powered on and connected via Ethernet[cite: 3, 4, 9, 10, 11]
+# Uncomment the line below if those files are not yet in C:\Users\csc\OneDrive\Desktop\rescue:
+# scp divyanshu@192.168.50.2:~/rescue/calibrate_motion.py divyanshu@192.168.50.2:~/rescue/see_detection.py divyanshu@192.168.50.2:~/rescue/check_all.py divyanshu@192.168.50.2:~/rescue/speaker_alert.py divyanshu@192.168.50.2:~/rescue/setup_pi.sh .
+
+# Step 3: Move any STL files into hardware/ if they are in the main folder[cite: 11]
+if (Test-Path motor_cradle.stl) { Move-Item -Force motor_cradle.stl hardware\ }
+if (Test-Path motor_clamp.stl)  { Move-Item -Force motor_clamp.stl hardware\ }
+
+# Step 4: Automatically strip any tags from README.md so it is 100% clean on GitHub
+if (Test-Path README.md) {
+    (Get-Content README.md -Raw) -replace '\s*\[cite:\s*[\d,\s]+\]', '' | Set-Content -Path README.md -Encoding UTF8
+}
+
+# Step 5: Create .gitignore to protect your real GPS logs and temporary files[cite: 2, 5, 9, 10, 11, 16]
+@"
+__pycache__/
+*.pyc
+venv/
+*.bak
+*.1
+calib_data.json
+rover_events.jsonl
+rescue_telemetry_log.csv
+webcam_test.py
+check.jpg
+webcam.jpg
+claude full conversation.txt
+"@ | Set-Content -Path .gitignore -Encoding UTF8
+
+# Step 6: Initialize Git, pull existing repo history, stage files, commit, and push[cite: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+git init
+git remote remove origin 2>$null
+git remote add origin [https://github.com/divyanshu-md/sanjeevani-rover.git](https://github.com/divyanshu-md/sanjeevani-rover.git)
+git branch -M main
+git pull origin main --allow-unrelated-histories
+
+git add README.md .gitignore
+foreach ($f in @("protocol.py","link.py","ground_station.py","rover_node.py","operator_view.py","check_all.py","see_detection.py","calibrate_motion.py","speaker_alert.py","setup_pi.sh","yolov8n-pose.onnx","images","hardware")) {
+    if (Test-Path $f) { git add $f }
+}
+
+git status
+git commit -m "Add Sanjeevani Rover AI detection, ground station, diagnostics, and documentation"
+git push -u origin main
+
+
 ## Credits
 
 - [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) pose model (AGPL-3.0)
