@@ -166,6 +166,46 @@ We would rather say what does not work yet than over-claim.
 6. Microphone so survivors can be heard as well as spoken to
 7. Measure detection accuracy with a proper test set
 
+# Sanjeevani Rover — AI Search-and-Rescue Recon Rover[cite: 9, 16]
+
+**SEVA First Innovation Challenge 2026** | **Indorama Public School**[cite: 16]  
+**Team:** Divyanshu, Saloni, Anika, and Ashutosh[cite: 16]  
+**Readiness Level:** TRL 5 (Prototype tested in an environment close to real use)[cite: 20]
+
+When an earthquake, flood, or building collapse traps people, the first hours decide who lives, and human rescuers cannot safely enter every narrow or unstable space[cite: 16]. **Sanjeevani Rover** is a low-cost, camera-only reconnaissance rover powered by a Raspberry Pi 4 that enters first, detects trapped people completely offline using an on-device YOLOv8-pose AI model, evaluates whether they are conscious (moving) or possibly unconscious (still), transmits CRC-checked alerts with GPS coordinates to a laptop ground station, and plays reassuring voice messages in English and Hindi[cite: 2, 9, 16, 17].
+
+> **Disclaimer:** This is a student prototype and not certified rescue equipment. Posture and consciousness labels are heuristic estimates based on camera geometry and movement, not a medical diagnosis[cite: 2, 8, 9].
+
+---
+
+## 1. Prototype Gallery
+
+| Front View (Pi Camera & Zebronics Webcam)[cite: 14] | Top View (Dual 2200mAh 80C LiPo & Wiring)[cite: 15] | Side Views (Cardboard Chassis & 4WD)[cite: 12, 13] |
+|---|---|---|
+| ![Front View](images/rover_front.jpg) | ![Top View](images/rover_top.jpg) | ![Side View](images/rover_side.jpg) |
+
+---
+
+## 2. System Architecture & Files
+
+The rover's four geared motors are driven manually via a FlySky radio remote and motor driver so a human operator remains in the loop at all times; **none of the Python scripts touch the drive motors**.
+
+```text
+          ROVER (Raspberry Pi 4B)                                LAPTOP (Windows Ground Station)
+ +-----------------------------------------------+       UDP     +-------------------------------+
+ | Pi Camera (CSI) --> rover_node.py             | ------------> | ground_station.py             |
+ |   YOLOv8n-pose (ONNX Runtime, offline)        |     :5005     |   Coloured alerts + CSV log   |
+ |   Posture + movement + 3-of-5 fusion rules    |               |   Google Maps position link   |
+ | Neo-6M GPS (UART /dev/serial0) --^            |               +-------------------------------+
+ | AMG8833 Thermal (I2C, optional) -^            |
+ | Speaker (3.5mm AUX) <-- speaker_alert.py      |       HTTP    +-------------------------------+
+ |                                               | ------------> | Web Browser                   |
+ | Zebronics USB Webcam --> operator_view.py     |     :8080     |   [http://192.168.50.2:8080](http://192.168.50.2:8080)    |
+ +-----------------------------------------------+               +-------------------------------+
+        |  (Independent RC Drive Train)
+ FlySky Receiver (FS-iA10B) --> Motor Driver --> 4 Geared Motors
+```
+
 ## Credits
 
 - [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) pose model (AGPL-3.0)
