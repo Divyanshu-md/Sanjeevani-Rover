@@ -1,171 +1,3 @@
-# Sanjeevani Rover
-
-**A low-cost, camera-only search-and-rescue rover.** It finds a person with on-board AI, works out whether they are standing, lying or collapsed and whether they are moving, tells them calmly that they have been seen, and sends a checked alert to a rescue ground station. No internet is needed.
-
-Built by **Divyanshu, Saloni, Anika and Ashutosh** for the **SEVA First Innovation Challenge 2026**.
-
-> **Status: working prototype.** Tested indoors with teammates. It has **not** been tested in a real disaster. See [Limitations](#limitations-stated-honestly).
-
----
-
-## Why this project
-
-In the first hours after an earthquake, flood or building collapse, rescuers cannot enter every dangerous space. A small rover that goes in first, finds a person and reports back can save time and keep rescuers out of danger. The biggest barrier is cost, so the rover is built from cheap, easy-to-buy parts, and every part can be rebuilt by students.
-
-## Features
-
-| Feature | What it does |
-|---|---|
-| **Human detection** | YOLOv8n-pose model runs fully on a Raspberry Pi 4 (CPU, ONNX, 480x480, roughly 3 pictures per second). |
-| **Posture** | Standing, lying down, or collapsed/slumped, from body key-points. Partial views (for example only part of the body visible) also raise an alert. |
-| **Conscious / unconscious guess** | A lying person who moves is reported as *conscious*; one who stays still as *possibly unconscious*. This is based on movement only. |
-| **Steady alerts** | An alert is sent only when 3 of the last 5 decisions agree, and at most one alert every 4 seconds. |
-| **Checked alerts** | Plain-text alert with a sequence number and CRC-16 check, sent over UDP. The ground station rejects damaged messages. |
-| **Ground station** | Laptop program that receives alerts, shows them and logs them to a CSV file. |
-| **Operator view** | Live USB-webcam picture in a browser on the laptop. |
-| **GPS** | NEO-6M GPS module. The alert says `Fix: NONE` and `Lat/Lon: N/A` when there is no fix; it never invents a position. |
-| **Voice message to survivors** | Plays a recorded English then Hindi message through a speaker. It plays when a person is first seen and again for a *new* person, but does not nag the same person. It can be muted. |
-| **Self-check** | `check_all.py` reports on camera, GPS, network, power and temperature. |
-
-### What the voice says
-> "We can see you. Please stay calm. A rescue alert has been sent to the team."
-
-It states only facts. It does **not** promise that help is arriving soon, because the rover cannot guarantee that.
-
-### Example alert (as received by the ground station)
-```
-ALERT: Human found! Status: Conscious Lying Down | Distance: N/A | Lat: N/A | Lon: N/A | Temp: N/A | Fix: NONE | Seq: 1*4DF9
-```
-`Temp: N/A` is normal: this build is camera-only (no thermal sensor). The field is reserved so a thermal sensor can be added later.
-
----
-
-## How it works
-
-```
-  Pi Camera --> YOLOv8n-pose (ONNX) --> posture + movement --> fusion (3 of last 5)
-                                                                    |
-   GPS (NEO-6M) -----------------------------------------------> alert text + CRC-16
-                                                                    |
-                                   +--------------------------------+---------------+
-                                   |                                                |
-                          UDP port 5005 over Ethernet                        speaker voice
-                                   |                                          (EN + HI)
-                          Ground station (laptop)
-                          shows alert, saves CSV log
-
-   USB webcam --> operator_view.py --> browser (http://<Pi>:8080)
-```
-
-Driving is done by a normal RC radio. **This repository contains no motor-control code.**
-
-## Hardware
-
-| Part | Used for |
-|---|---|
-| Raspberry Pi 4 Model B | Runs everything |
-| Pi Camera (OV5647) | Human detection |
-| USB webcam | Operator view |
-| GY-GPS6MV2 (NEO-6M) with antenna | Position |
-| Small aux speaker | Voice message to survivors |
-| FlySky FS-iA10B receiver, PPM-to-PWM converter, MOSFET boards, 4 yellow 12 V gear motors | Driving by RC radio |
-| USB power bank | Powers the Pi (a power bank that can supply a full 5 V / 3 A is recommended) |
-| Cardboard chassis | Prototype body (a 3D-printed body is planned) |
-
-## Repository contents
-
-| File | Purpose |
-|---|---|
-| `rover_node.py` | Main program on the Pi: camera, detection, decision and alert sending |
-| `link.py`, `protocol.py` | UDP sender and the alert format with CRC-16 |
-| `ground_station.py` | Receiver on the laptop, writes `rescue_telemetry_log.csv` |
-| `operator_view.py` | USB webcam streamed to a browser |
-| `speaker_alert.py` | Voice message logic (new-person rule, mute) |
-| `check_all.py` | Health check (does not touch the motors) |
-| `see_detection.py`, `calibrate_motion.py` | Tools for checking detection and tuning the motion threshold |
-| `setup_pi.sh` | Installs the Pi software dependencies |
-| `audio/` | Recorded voice messages (`found_en.wav`, `found_hi.wav`) |
-| `docs/` | Demo commands and photos |
-
----
-
-## Setup
-
-**Network:** a direct Ethernet cable between the Pi and the laptop with fixed addresses: laptop `192.168.50.1`, Pi `192.168.50.2`.
-
-**Pi:** copy the project folder to `~/rescue`, then run `setup_pi.sh` to install the dependencies and create the `venv` environment. Put a YOLOv8n-pose ONNX model named `yolov8n-pose.onnx` in the same folder.
-
-> **Model file is not included.** YOLOv8 is made by Ultralytics and is licensed under AGPL-3.0. Download or export `yolov8n-pose` yourself from [Ultralytics](https://github.com/ultralytics/ultralytics) (the node expects a 480x480 input) and respect their licence.
-
-**Laptop (Windows):** install Python, then allow the alerts through the firewall once (PowerShell as Administrator):
-```powershell
-New-NetFirewallRule -DisplayName "Rover UDP 5005" -Direction Inbound -Protocol UDP -LocalPort 5005 -Action Allow
-```
-
-## Run the demo
-
-Use two terminal windows. **Start the ground station first.**
-
-**1. Laptop, window B: receiver**
-```powershell
-cd C:\path\to\rescue
-python ground_station.py
-```
-
-**2. Laptop, window A: connect to the Pi**
-```powershell
-ssh <pi-user>@192.168.50.2
-```
-
-**3. Pi: start the rover**
-```bash
-cd ~/rescue && source venv/bin/activate
-python3 rover_node.py
-```
-A person stands 2 to 3 metres from the camera. Alerts appear on the laptop and the voice plays on the Pi.
-
-Useful extras (stop the rover with Ctrl+C first):
-
-| Command (on the Pi) | What it does |
-|---|---|
-| `python3 check_all.py` | Health check |
-| `python3 rover_node.py --dry-run -v` | Prints alerts, sends nothing (safe test) |
-| `python3 operator_view.py` | USB webcam view at `http://<Pi address>:8080` |
-| `python3 speaker_alert.py test` | Plays the voice message once |
-| `touch ~/rescue/MUTE` / `rm ~/rescue/MUTE` | Mute / unmute the voice |
-| `vcgencmd measure_temp` | Pi temperature |
-
-See [`docs/Rover_Demo_Commands.pdf`](docs/Rover_Demo_Commands.pdf) for the full step-by-step list.
-
----
-
-## Limitations (stated honestly)
-
-We would rather say what does not work yet than over-claim.
-
-- **Camera only.** No thermal sensor, so no body-heat check. Detection depends on lighting.
-- **About 3 pictures per second** on the Pi 4 CPU. We chose reliable, steady alerts over raw speed.
-- **Consciousness is a guess from movement only.** It is a hint for rescuers, not a medical judgement.
-- **No accuracy figure yet.** Tested indoors with teammates; we have not measured detection accuracy.
-- **Not tested in a real disaster.**
-- **The Pi runs hot** (about 62 to 70 degrees C under load). A heat sink and fan are being added.
-- **GPS needs open sky.** Indoors the alert says `Fix: NONE`. Outdoor testing is still to be done.
-- **The alert link is a wired Ethernet cable for now.** The alert is plain network data, so Wi-Fi or a long-range radio link is the next step.
-- **Driven by a human with an RC radio.** It is not autonomous, on purpose: a human stays in control.
-- **The voice is one-way.** The rover cannot hear the survivor yet. A microphone is a possible upgrade.
-- **Prototype body.** Cardboard chassis; a 3D-printed body is designed for the next version.
-- **Safety.** This is a student prototype. It is not certified equipment and must never replace trained rescuers.
-
-## Roadmap
-
-1. Heat sink and fan for the Pi
-2. Outdoor GPS testing
-3. Wi-Fi / long-range radio link for alerts
-4. Thermal sensor (the `Temp` field is already reserved in the alert)
-5. 3D-printed, weather-resistant body
-6. Microphone so survivors can be heard as well as spoken to
-7. Measure detection accuracy with a proper test set
-
 # Sanjeevani Rover — AI Search-and-Rescue Recon Rover[cite: 9, 16]
 
 **SEVA First Innovation Challenge 2026** | **Indorama Public School**[cite: 16]  
@@ -174,7 +6,7 @@ We would rather say what does not work yet than over-claim.
 
 When an earthquake, flood, or building collapse traps people, the first hours decide who lives, and human rescuers cannot safely enter every narrow or unstable space[cite: 16]. **Sanjeevani Rover** is a low-cost, camera-only reconnaissance rover powered by a Raspberry Pi 4 that enters first, detects trapped people completely offline using an on-device YOLOv8-pose AI model, evaluates whether they are conscious (moving) or possibly unconscious (still), transmits CRC-checked alerts with GPS coordinates to a laptop ground station, and plays reassuring voice messages in English and Hindi[cite: 2, 9, 16, 17].
 
-> **Disclaimer:** This is a student prototype and not certified rescue equipment. Posture and consciousness labels are heuristic estimates based on camera geometry and movement, not a medical diagnosis[cite: 2, 8, 9].
+> **Disclaimer:** This is a student prototype and not certified rescue equipment[cite: 9]. Posture and consciousness labels are heuristic estimates based on camera geometry and movement, not a medical diagnosis[cite: 2, 8, 9].
 
 ---
 
@@ -188,7 +20,7 @@ When an earthquake, flood, or building collapse traps people, the first hours de
 
 ## 2. System Architecture & Files
 
-The rover's four geared motors are driven manually via a FlySky radio remote and motor driver so a human operator remains in the loop at all times; **none of the Python scripts touch the drive motors**.
+The rover's four geared motors are driven manually via a FlySky radio remote and motor driver so a human operator remains in the loop at all times; **none of the Python scripts touch the drive motors**[cite: 2, 9, 16, 20].
 
 ```text
           ROVER (Raspberry Pi 4B)                                LAPTOP (Windows Ground Station)
@@ -200,11 +32,31 @@ The rover's four geared motors are driven manually via a FlySky radio remote and
  | AMG8833 Thermal (I2C, optional) -^            |
  | Speaker (3.5mm AUX) <-- speaker_alert.py      |       HTTP    +-------------------------------+
  |                                               | ------------> | Web Browser                   |
- | Zebronics USB Webcam --> operator_view.py     |     :8080     |   [http://192.168.50.2:8080](http://192.168.50.2:8080)    |
+ | Zebronics USB Webcam --> operator_view.py     |     :8080     |   http://192.168.50.2:8080    |
  +-----------------------------------------------+               +-------------------------------+
         |  (Independent RC Drive Train)
  FlySky Receiver (FS-iA10B) --> Motor Driver --> 4 Geared Motors
 ```
+
+### Repository File Guide
+
+| File | Runs On | Purpose |
+|---|---|---|
+| `rover_node.py` | **Pi** | Captures 640x480 @ 15 fps frames from the Pi Camera, runs `yolov8n-pose.onnx`, classifies posture/motion, reads GPS, and transmits UDP alerts[cite: 2, 9]. |
+| `ground_station.py` | **Laptop** | Listens on UDP `0.0.0.0:5005`, verifies packet CRCs, displays red/yellow alerts with Google Maps links, and logs every packet to `rescue_telemetry_log.csv`[cite: 5, 9]. |
+| `protocol.py` | **Both** | Builds and validates the UTF-8 alert string and computes the 4-hex-digit `CRC-16/CCITT-FALSE` checksum[cite: 8, 9]. |
+| `link.py` | **Both** | Standard-library non-blocking UDP socket transmitter (`UdpTx`) and receiver (`UdpRx`)[cite: 6, 9]. |
+| `operator_view.py` | **Pi** | Streams the top-mounted USB webcam as MJPEG over HTTP port `8080` with a live corner clock to detect frozen video[cite: 7, 9]. |
+| `speaker_alert.py` | **Pi** | Plays bilingual (English and Hindi) voice alerts over the Pi's 3.5 mm headphone jack (`plughw:Headphones`) when a person is found[cite: 11, 17]. |
+| `check_all.py` | **Pi** | 1-minute diagnostic check for camera locks, power/throttling (`vcgencmd`), CPU temperature, AI speed, USB webcam, GPS, and laptop link[cite: 4]. |
+| `see_detection.py` | **Pi** | Waits 10 seconds, captures one Pi Camera frame, draws red bounding boxes and green/yellow keypoints, and saves `seen.jpg`[cite: 3]. |
+| `calibrate_motion.py` | **Pi** | Records 25 seconds of still posture and 25 seconds of limb movement to compute the optimal `MOTION_THRESH` value[cite: 10]. |
+| `setup_pi.sh` | **Pi** | One-time setup script for system packages, Python `venv`, I2C, and `/dev/serial0` UART[cite: 9]. |
+| `yolov8n-pose.onnx` | **Pi** | Exported YOLOv8n-pose ONNX model for CPU inference via `onnxruntime`[cite: 2, 9]. |
+| `rescue_telemetry_log_sample.csv` | **Sample** | Sanitized sample CSV log demonstrating recorded alerts with test GPS coordinates[cite: 5, 8, 16]. |
+| `hardware/*.stl` | **CAD** | `motor_cradle.stl` and `motor_clamp.stl` 3D-printable motor mounts designed for the next-stage chassis upgrade. |
+
+---
 
 ## 3. How the AI Detection & Alert Protocol Work
 
@@ -218,10 +70,10 @@ The rover's four geared motors are driven manually via a FlySky radio remote and
 Each alert is sent as a single UTF-8 UDP datagram protected by a 4-hex-digit `CRC-16/CCITT-FALSE` checksum after `*`[cite: 8, 9]:
 
 ```text
-ALERT: Human found! Status: Conscious (Upright/Sitting) | Distance: 2.1 m | Lat: N/A | Lon: N/A | Temp: N/A | Fix: NONE | Seq: 1*587E
+ALERT: Human found! Status: Conscious (Upright/Sitting) | Distance: 2.5 m | Lat: N/A | Lon: N/A | Temp: N/A | Fix: NONE | Seq: 1*587E
 ```
 
-* **Status Values:** `Conscious (Upright/Sitting)`, `Unconscious (Collapsed/Slumped)`, `Conscious Lying Down`, `Unconscious Lying Down`, or `Person detected (partial view)`[cite: 8].
+* **Status Values:** `Conscious (Upright/Sitting)`, `Unconscious (Collapsed/Slumped)`, `Conscious Lying Down`, `Unconscious Lying Down`, or `Person detected (partial view)`.
 * **GPS Fix Labels:** `LIVE` (fix age `<= 3.0 s`), `CACHED-<n>s` (older fix), or `NONE` (no fix/indoors; the rover never invents coordinates)[cite: 2, 9, 17].
 
 ---
@@ -311,63 +163,3 @@ sudo shutdown now                 # Safely shut down the Pi before unplugging po
   1. **3D-Printed Weather-Resistant Body:** Transitioning to our CAD-designed chassis and motor mounts (`motor_cradle.stl`, `motor_clamp.stl`)[cite: 11, 16, 18, 20].
   2. **AMG8833 Thermal Sensor:** Enabling `THERMAL_MODE = "amg8833"` to cross-check body heat and eliminate visual false positives[cite: 2, 9, 18, 20].
   3. **Fiber-Optic / Tethered Link:** Developing a thin physical tether (inspired by fiber-optic drones) to maintain high-bandwidth communication inside deep rubble where radio signals weaken[cite: 18, 20].
-
-  # Step 1: Go to your local project folder and create subfolders[cite: 11]
-cd C:\Users\csc\OneDrive\Desktop\rescue
-mkdir -Force images, hardware
-
-# Step 2: (Optional) Pull any remaining scripts from the Pi if it is powered on and connected via Ethernet[cite: 3, 4, 9, 10, 11]
-# Uncomment the line below if those files are not yet in C:\Users\csc\OneDrive\Desktop\rescue:
-# scp divyanshu@192.168.50.2:~/rescue/calibrate_motion.py divyanshu@192.168.50.2:~/rescue/see_detection.py divyanshu@192.168.50.2:~/rescue/check_all.py divyanshu@192.168.50.2:~/rescue/speaker_alert.py divyanshu@192.168.50.2:~/rescue/setup_pi.sh .
-
-# Step 3: Move any STL files into hardware/ if they are in the main folder[cite: 11]
-if (Test-Path motor_cradle.stl) { Move-Item -Force motor_cradle.stl hardware\ }
-if (Test-Path motor_clamp.stl)  { Move-Item -Force motor_clamp.stl hardware\ }
-
-# Step 4: Automatically strip any tags from README.md so it is 100% clean on GitHub
-if (Test-Path README.md) {
-    (Get-Content README.md -Raw) -replace '\s*\[cite:\s*[\d,\s]+\]', '' | Set-Content -Path README.md -Encoding UTF8
-}
-
-# Step 5: Create .gitignore to protect your real GPS logs and temporary files[cite: 2, 5, 9, 10, 11, 16]
-@"
-__pycache__/
-*.pyc
-venv/
-*.bak
-*.1
-calib_data.json
-rover_events.jsonl
-rescue_telemetry_log.csv
-webcam_test.py
-check.jpg
-webcam.jpg
-claude full conversation.txt
-"@ | Set-Content -Path .gitignore -Encoding UTF8
-
-# Step 6: Initialize Git, pull existing repo history, stage files, commit, and push[cite: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-git init
-git remote remove origin 2>$null
-git remote add origin [https://github.com/divyanshu-md/sanjeevani-rover.git](https://github.com/divyanshu-md/sanjeevani-rover.git)
-git branch -M main
-git pull origin main --allow-unrelated-histories
-
-git add README.md .gitignore
-foreach ($f in @("protocol.py","link.py","ground_station.py","rover_node.py","operator_view.py","check_all.py","see_detection.py","calibrate_motion.py","speaker_alert.py","setup_pi.sh","yolov8n-pose.onnx","images","hardware")) {
-    if (Test-Path $f) { git add $f }
-}
-
-git status
-git commit -m "Add Sanjeevani Rover AI detection, ground station, diagnostics, and documentation"
-git push -u origin main
-
-
-## Credits
-
-- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) pose model (AGPL-3.0)
-- [Picamera2 / libcamera](https://github.com/raspberrypi/picamera2) for the Pi Camera
-- [eSpeak NG](https://github.com/espeak-ng/espeak-ng) as a fallback robot voice
-
-## Licence
-
-The code in this repository is released under the [MIT licence](LICENSE). Third-party components keep their own licences.
